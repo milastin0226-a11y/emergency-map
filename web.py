@@ -48,6 +48,7 @@ CATEGORY_CONFIG = {
 # 2. 핵심 함수 (계산 로직)
 # ==========================================
 def clean_name(name):
+    # [장소] 같은 태그 제거하고 깔끔하게 만듦
     return re.sub(r'\[.*?\]\s*', '', name)
 
 def get_coords_from_address(address):
@@ -104,10 +105,9 @@ def get_gg_data(url):
     return []
 
 # ==========================================
-# 3. 화면 구성 및 상태 관리 (버그 수정 핵심)
+# 3. 화면 구성 및 상태 관리
 # ==========================================
 
-# (1) 상태 초기화: 검색 결과가 날아가지 않게 저장소를 만듭니다.
 if 'search_done' not in st.session_state:
     st.session_state['search_done'] = False
 if 'my_lat' not in st.session_state:
@@ -129,7 +129,6 @@ with st.sidebar:
 
     st.markdown("---")
     st.subheader("1. 📡 내 위치로 찾기 (GPS)")
-    # GPS 버튼 (누르면 브라우저 위치 정보 요청)
     gps_loc = get_geolocation()
     
     if gps_loc:
@@ -137,22 +136,23 @@ with st.sidebar:
         if btn_gps:
             st.session_state['my_lat'] = gps_loc['coords']['latitude']
             st.session_state['my_lon'] = gps_loc['coords']['longitude']
-            st.session_state['my_name'] = "내 위치 (GPS)"
-            st.session_state['search_done'] = False # 좌표 갱신 후 검색 로직을 태우기 위해
+            # GPS로 찾았을 때의 이름은 "내위치"로 고정
+            st.session_state['my_name'] = "내위치" 
+            st.session_state['search_done'] = False 
 
     st.markdown("---")
     st.subheader("2. ⌨️ 직접 입력해서 찾기")
     user_input = st.text_input("위치 입력", placeholder="예: 수원역, 광교중앙역")
     btn_manual = st.button("🔍 주소로 검색 실행")
 
-    # 주소 검색 버튼을 눌렀을 때
     if btn_manual and user_input:
         lat, lon, name = get_location_smart(user_input)
         if lat:
             st.session_state['my_lat'] = lat
             st.session_state['my_lon'] = lon
-            st.session_state['my_name'] = clean_name(name)
-            st.session_state['search_done'] = False # 좌표 갱신
+            # 직접 입력했을 때는 검색된 장소 이름(예: 아주대학교)을 저장
+            st.session_state['my_name'] = clean_name(name) 
+            st.session_state['search_done'] = False 
         else:
             st.error("위치를 찾을 수 없습니다.")
 
@@ -160,7 +160,6 @@ with st.sidebar:
 # 4. 검색 로직 (상태 기반 실행)
 # ==========================================
 
-# 위치가 잡혔고, 아직 검색 결과를 안 만들었다면 -> 데이터 분석 시작
 if st.session_state['my_lat'] and not st.session_state['search_done']:
     my_lat = st.session_state['my_lat']
     my_lon = st.session_state['my_lon']
@@ -190,44 +189,42 @@ if st.session_state['my_lat'] and not st.session_state['search_done']:
                             })
                 except: continue
         
-        # 결과를 session_state에 저장 (이제 사라지지 않음!)
         st.session_state['candidates'] = sorted(candidates, key=lambda x: x['dist'])
         st.session_state['search_done'] = True
 
 # ==========================================
-# 5. 지도 그리기 (항상 실행됨)
+# 5. 지도 그리기
 # ==========================================
 
-# 저장된 결과가 있으면 지도를 그립니다.
 if st.session_state['search_done']:
     my_lat = st.session_state['my_lat']
     my_lon = st.session_state['my_lon']
+    my_name = st.session_state['my_name'] # 설정된 출발지 이름
     candidates = st.session_state['candidates']
 
-    st.success(f"📍 기준: {st.session_state['my_name']} | 주변 {len(candidates)}개 발견")
+    st.success(f"📍 출발: {my_name} | 주변 {len(candidates)}개 발견")
 
-    # 지도 생성
     m = folium.Map(location=[my_lat, my_lon], zoom_start=15)
     folium.Marker(
         [my_lat, my_lon], 
-        popup="내 위치", 
+        popup=f"출발: {my_name}", 
         icon=folium.Icon(color='black', icon='home')
     ).add_to(m)
 
-    # 렉 방지를 위해 가까운 10개만 내비 계산
     LIMIT_NAVI = 10 
     
     for i, item in enumerate(candidates):
         drive_str = "거리순 제외"
         if i < LIMIT_NAVI:
-            # 내비 시간은 API 호출이라 느리므로, 이미 계산된게 없으면 계산
             if 'drive_time' not in item:
                 time = get_navigation_time(my_lon, my_lat, item['lon'], item['lat'])
                 item['drive_time'] = f"{int(time)}분" if time else "정보 없음"
             drive_str = item['drive_time']
 
-        # 팝업 HTML
-        map_link = f"https://map.kakao.com/?sName=내위치&eName={item['name']}"
+        # [핵심 수정] sName에 저장해둔 출발지 이름(my_name)을 넣습니다.
+        # GPS일 경우 "내위치", 직접 입력일 경우 "수원역" 등이 들어갑니다.
+        map_link = f"https://map.kakao.com/?sName={my_name}&eName={item['name']}"
+        
         conf = item['config']
         icon_prefix = 'fa' if conf['icon'] in ['fire-extinguisher', 'bell', 'snowflake-o', 'shield', 'user'] else 'glyphicon'
 
@@ -238,7 +235,7 @@ if st.session_state['search_done']:
             📏 {item['dist']*1000:.0f}m | 🚗 {drive_str}<br>
             <a href="{map_link}" target="_blank" 
                 style="background-color:#FEE500; color:black; padding:5px; display:block; text-align:center; text-decoration:none; border-radius:5px; margin-top:5px;">
-                길찾기
+                길찾기 (From: {my_name})
             </a>
         </div>
         """
