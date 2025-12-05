@@ -3,6 +3,8 @@ import requests
 import folium
 from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
+# [추가됨] GPS 기능을 위한 라이브러리
+from streamlit_js_eval import get_geolocation
 import os
 import re
 from math import radians, sin, cos, sqrt, atan2
@@ -33,7 +35,7 @@ CATEGORY_CONFIG = {
 }
 
 # ==========================================
-# 3. 함수 정의 (기존 로직 그대로 유지)
+# 3. 함수 정의
 # ==========================================
 def clean_name(name):
     return re.sub(r'\[.*?\]\s*', '', name)
@@ -57,16 +59,8 @@ def get_coords_from_address(address):
     return None, None
 
 def get_location_smart(user_input):
-    # 내 위치 검색 기능 (IP 기반)
-    if user_input.replace(" ", "") == "내위치":
-        try:
-            ip_res = requests.get("http://ip-api.com/json/").json()
-            if ip_res['status'] == 'success':
-                return float(ip_res['lat']), float(ip_res['lon']), "내 위치(IP 기반)"
-        except Exception as e:
-            pass
-
-    # 기존 카카오 검색 로직
+    # [변경] IP 기반 로직 제거 -> GPS 버튼으로 대체됨
+    # 오직 텍스트 검색만 수행
     headers = {"Authorization": f"KakaoAK {KAKAO_API_KEY}"}
     search_query = user_input if "수원" in user_input else f"수원시 {user_input}"
     try:
@@ -120,17 +114,29 @@ def main():
     st.title("🚽 수원시 통합 안전 지도")
     st.markdown("---")
 
+    # 세션 상태 초기화 (지도 및 현재 위치 저장)
+    if 'generated_map' not in st.session_state:
+        st.session_state['generated_map'] = None
+    if 'search_result_text' not in st.session_state:
+        st.session_state['search_result_text'] = ""
+    if 'active_lat' not in st.session_state:
+        st.session_state['active_lat'] = None
+    if 'active_lon' not in st.session_state:
+        st.session_state['active_lon'] = None
+    if 'active_name' not in st.session_state:
+        st.session_state['active_name'] = None
+    if 'last_gps_timestamp' not in st.session_state:
+        st.session_state['last_gps_timestamp'] = 0
+
     # 사이드바에서 입력 받기
     with st.sidebar:
         st.header("🔍 검색 옵션")
         
-        # 1. 대주제 선택
+        # 1. 대주제 & 소주제 선택
         cat_options = list(CATEGORY_CONFIG.keys())
-        cat_labels = [CATEGORY_CONFIG[k]['name'] for k in cat_options]
         selected_cat_idx = st.selectbox("카테고리 선택", options=cat_options, format_func=lambda x: CATEGORY_CONFIG[x]['name'])
         category = CATEGORY_CONFIG[selected_cat_idx]
 
-        # 2. 소주제 선택
         services_list = list(category['services'].keys())
         selected_service_name = st.selectbox("세부 시설 선택", options=services_list)
         selected_services = [selected_service_name]
@@ -138,163 +144,140 @@ def main():
         st.markdown("---")
         st.subheader("📍 위치 설정")
 
-        # 3. [개선] 위치 입력 방식 (텍스트 입력 vs 버튼)
-        # 폼(Form)을 사용하여 엔터키 입력 등 사용자 편의성 증대
+        # [변경] 실제 GPS 좌표 요청 버튼 (streamlit-js-eval 사용)
+        st.write("📡 GPS로 내 위치 찾기")
+        gps_data = get_geolocation(component_key='get_gps', button_text="📍 내 현재 위치로 검색")
+
+        st.markdown("---")
+        st.write("🏙️ 장소 이름으로 검색")
+        
         with st.form(key='search_form'):
-            user_input_text = st.text_input("장소 이름으로 검색", placeholder="예: 수원역, 아주대")
-            
-            col1, col2 = st.columns([1, 1])
-            with col1:
-                submit_text = st.form_submit_button("🔍 장소 검색")
-            with col2:
-                # 이 버튼은 폼 바깥에서 별도로 처리하는게 UX상 좋지만, 
-                # 레이아웃을 위해 폼 내부에 두되, 로직에서 분기 처리
-                submit_my_loc = st.form_submit_button("📍 내 위치로")
+            user_input_text = st.text_input("장소 입력", placeholder="예: 수원역, 아주대")
+            submit_text = st.form_submit_button("🔍 검색")
 
     # ==========================================
-    # 지도 생성 로직
+    # 검색 우선순위 및 좌표 설정 로직
     # ==========================================
     
-    if 'generated_map' not in st.session_state:
-        st.session_state['generated_map'] = None
-    if 'search_result_text' not in st.session_state:
-        st.session_state['search_result_text'] = ""
+    should_run_analysis = False
 
-    # 검색 실행 조건 확인
-    target_location = None
+    # 1. GPS 데이터가 새로 들어왔는지 확인
+    if gps_data and 'coords' in gps_data:
+        # 타임스탬프를 확인하여 새로운 클릭인지 확인 (혹은 최초 실행)
+        current_timestamp = gps_data.get('timestamp', 0)
+        if current_timestamp != st.session_state['last_gps_timestamp']:
+            st.session_state['active_lat'] = gps_data['coords']['latitude']
+            st.session_state['active_lon'] = gps_data['coords']['longitude']
+            st.session_state['active_name'] = "📍 현위치 (GPS)"
+            st.session_state['last_gps_timestamp'] = current_timestamp
+            should_run_analysis = True
+            st.sidebar.success("✅ GPS 위치 수신 성공!")
+
+    # 2. 텍스트 검색 버튼을 눌렀는지 확인 (GPS보다 우선 실행하여 덮어씌움)
+    if submit_text and user_input_text:
+        my_lat, my_lon, my_name = get_location_smart(user_input_text)
+        if my_lat:
+            st.session_state['active_lat'] = my_lat
+            st.session_state['active_lon'] = my_lon
+            st.session_state['active_name'] = my_name
+            should_run_analysis = True
+        else:
+            st.error(f"❌ '{user_input_text}' 위치를 찾을 수 없습니다.")
+
+    # ==========================================
+    # 지도 생성 및 분석 실행
+    # ==========================================
     
-    if submit_my_loc:
-        target_location = "내위치" # 버튼 누르면 강제로 '내위치' 할당
-    elif submit_text and user_input_text:
-        target_location = user_input_text # 텍스트 입력값 사용
-
-    # 실제 검색 로직 실행
-    if target_location:
-        with st.spinner("📍 위치를 찾고 데이터를 분석 중입니다..."):
-            my_lat, my_lon, my_name = get_location_smart(target_location)
+    if should_run_analysis and st.session_state['active_lat']:
+        with st.spinner(f"📍 {st.session_state['active_name']} 기준으로 분석 중..."):
             
-            if not my_lat:
-                st.error(f"❌ '{target_location}' 위치를 찾을 수 없습니다.")
-            else:
-                # 좌표 컬럼 정의
-                coordinate_columns = [
-                    ("REFINE_WGS84_LAT","REFINE_WGS84_LOGT"),
-                    ("LAT","LON"),
-                    ("TPLT_WGS84_LAT","TPLT_WGS84_LOGT"), 
-                    ("위도","경도"),
-                    ("Y","X"), 
-                    ("X_COORD","Y_COORD"),
-                    ("X_WGS","Y_WGS")
-                ]
+            my_lat = st.session_state['active_lat']
+            my_lon = st.session_state['active_lon']
+            my_name = st.session_state['active_name']
 
-                # 지도 객체 생성
-                m = folium.Map(location=[my_lat, my_lon], zoom_start=15)
-                folium.Marker([my_lat,my_lon], popup=f"<b>출발: {clean_name(my_name)}</b>", 
-                              icon=folium.Icon(color='black', icon='home', prefix='fa')).add_to(m)
+            # 좌표 컬럼 정의
+            coordinate_columns = [
+                ("REFINE_WGS84_LAT","REFINE_WGS84_LOGT"), ("LAT","LON"),
+                ("TPLT_WGS84_LAT","TPLT_WGS84_LOGT"), ("위도","경도"),
+                ("Y","X"), ("X_COORD","Y_COORD"), ("X_WGS","Y_WGS")
+            ]
+
+            # 지도 객체 생성
+            m = folium.Map(location=[my_lat, my_lon], zoom_start=15)
+            folium.Marker([my_lat,my_lon], popup=f"<b>출발: {clean_name(my_name)}</b>", 
+                          icon=folium.Icon(color='black', icon='home', prefix='fa')).add_to(m)
+            
+            # MarkerCluster 생성
+            icon_create_function = """
+                function(cluster) {
+                    var count = cluster.getChildCount();
+                    var size = count < 10 ? 20 + count * 1.2 : (count < 50 ? 30 + (count - 10) * 0.5 : 50 + (count - 50) * 0.1);
+                    size = Math.min(size, 60);
+                    var color = count < 10 ? 'green' : (count < 50 ? 'orange' : 'red');
+                    return L.divIcon({
+                        html: '<div style="background-color: ' + color + '; width: ' + size + 'px; height: ' + size + 'px; border-radius: 50%; text-align: center; line-height: ' + size + 'px; color: white; font-weight: bold; font-size: ' + (size/3.5) + 'px;">' + count + '</div>',
+                        className: 'marker-cluster',
+                        iconSize: [size, size]
+                    });
+                }
+            """
+            marker_cluster = MarkerCluster(icon_create_function=icon_create_function).add_to(m)
+            
+            total_count = 0
+
+            for svc_name in selected_services:
+                conf = category['services'][svc_name]
+                radius_km = conf['radius']
                 
-                # MarkerCluster 생성 (JS 커스텀 함수)
-                icon_create_function = """
-                    function(cluster) {
-                        var count = cluster.getChildCount();
-                        var size; 
-                        var color;
-                        if (count < 10) {
-                            color = 'green';
-                            size = 20 + count * 1.2; 
-                        } else if (count < 50) {
-                            color = 'orange';
-                            size = 30 + (count - 10) * 0.5; 
-                        } else {
-                            color = 'red';
-                            size = 50 + (count - 50) * 0.1; 
-                        }
-                        size = Math.min(size, 60);
-                        return L.divIcon({
-                            html: '<div style="background-color: ' + color + '; width: ' + size + 'px; height: ' + size + 'px; border-radius: 50%; text-align: center; line-height: ' + size + 'px; color: white; font-weight: bold; font-size: ' + (size/3.5) + 'px;">' + count + '</div>',
-                            className: 'marker-cluster',
-                            iconSize: [size, size]
-                        });
-                    }
-                """
-                marker_cluster = MarkerCluster(icon_create_function=icon_create_function).add_to(m)
+                folium.Circle([my_lat, my_lon], radius=radius_km*1000, color=conf['color'], fill=False, dash_array='5,5').add_to(m)
+
+                rows = get_gg_data_all_pages(conf['url'])
+                df = pd.DataFrame(rows)
                 
-                total_count = 0
+                coordinate_columns_flat = [col for pair in coordinate_columns for col in pair]
+                for col in coordinate_columns_flat:
+                    if col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce') 
 
-                for svc_name in selected_services:
-                    conf = category['services'][svc_name]
-                    radius_km = conf['radius']
+                suwon_mask = df.apply(lambda row: any("수원시" in str(row.get(col, "")) for col in ["REFINE_ROADNM_ADDR", "REFINE_LOTNO_ADDR", "SIGUN_NM"]), axis=1)
+                df_suwon = df[suwon_mask].copy()
+                total_count += len(df_suwon)
+
+                for index, row in df_suwon.iterrows():
+                    name = row.get("PBCTLT_PLC_NM") or row.get("INSTL_PLC_NM") or row.get("INSTL_PLACE") or \
+                           row.get("FACLT_NM") or row.get("EQUP_NM") or row.get("TPLT_NM") or row.get("REFINE_ROADNM_ADDR") or "이름 미상"
                     
-                    folium.Circle(
-                        location=[my_lat, my_lon],
-                        radius=radius_km*1000,
-                        color=conf['color'],
-                        fill=False,
-                        dash_array='5,5'
-                    ).add_to(m)
-
-                    rows = get_gg_data_all_pages(conf['url'])
-                    df = pd.DataFrame(rows)
+                    lat, lon = None, None
+                    for lat_col, lon_col in coordinate_columns:
+                        try:
+                            val_lat, val_lon = row.get(lat_col, 0), row.get(lon_col, 0)
+                            if 30 <= val_lat <= 45 and 120 <= val_lon <= 135:
+                                lat, lon = val_lat, val_lon
+                                break
+                        except: continue
                     
-                    coordinate_columns_flat = [col for pair in coordinate_columns for col in pair]
-                    for col in coordinate_columns_flat:
-                        if col in df.columns:
-                            df[col] = pd.to_numeric(df[col], errors='coerce') 
-
-                    suwon_mask = df.apply(lambda row: any("수원시" in str(row.get(col, "")) for col in ["REFINE_ROADNM_ADDR", "REFINE_LOTNO_ADDR", "SIGUN_NM"]), axis=1)
-                    df_suwon = df[suwon_mask].copy()
-                    
-                    total_count += len(df_suwon)
-
-                    for index, row in df_suwon.iterrows():
-                        name = row.get("PBCTLT_PLC_NM") or row.get("INSTL_PLC_NM") or row.get("INSTL_PLACE") or \
-                               row.get("FACLT_NM") or row.get("EQUP_NM") or row.get("TPLT_NM") or row.get("REFINE_ROADNM_ADDR") or "이름 미상"
+                    if lat is None or lon is None:
+                        addr_search = row.get("REFINE_ROADNM_ADDR") or row.get("PBCTLT_PLC_NM")
+                        if addr_search: lat, lon = get_coords_from_address(f"수원 {addr_search}")
                         
-                        lat, lon = None, None
-                        for lat_col, lon_col in coordinate_columns:
-                            try:
-                                val_lat = row.get(lat_col, 0)
-                                val_lon = row.get(lon_col, 0)
-                                if 30 <= val_lat <= 45 and 120 <= val_lon <= 135:
-                                    lat, lon = val_lat, val_lon
-                                    break
-                            except: 
-                                continue
+                    if lat and lon:
+                        dist = get_straight_distance(my_lat,my_lon,lat,lon)
+                        walk_str = f"{int(get_walking_time(dist))}분" if get_walking_time(dist)<60 else f"{get_walking_time(dist)/60:.1f}시간"
+                        display_color = conf['color'] if dist <= radius_km else 'lightgray'
                         
-                        if lat is None or lon is None:
-                            addr_search = row.get("REFINE_ROADNM_ADDR") or row.get("PBCTLT_PLC_NM")
-                            if addr_search:
-                                lat, lon = get_coords_from_address(f"수원 {addr_search}")
-                            
-                        if lat and lon:
-                            dist = get_straight_distance(my_lat,my_lon,lat,lon)
-                            walk_time = get_walking_time(dist)
-                            walk_str = f"{int(walk_time)}분" if walk_time<60 else f"{walk_time/60:.1f}시간"
-                            display_color = conf['color'] if dist <= radius_km else 'lightgray'
+                        kakao_map_url = f"https://map.kakao.com/link/to/{clean_name(name)},{lat},{lon}/from/{clean_name(my_name)},{my_lat},{my_lon}"
 
-                            kakao_map_url = f"https://map.kakao.com/link/to/{clean_name(name)},{lat},{lon}/from/{clean_name(my_name)},{my_lat},{my_lon}"
+                        popup_html = f"""
+                        <div style="width:200px">
+                            <b>{clean_name(name)}</b><br><span style="color:gray; font-size:0.9em">{svc_name}</span><hr style="margin:5px 0">
+                            📏 <b>거리:</b> {dist*1000:.0f}m<br>🏃 <b>도보:</b> 약 {walk_str}<hr style="margin:5px 0">
+                            <a href="{kakao_map_url}" target="_blank" style="background-color:#FEE500; color:black; padding:5px 10px; text-decoration:none; border-radius:5px; font-weight:bold; font-size:0.9em; display:block; text-align:center;">카카오맵 길찾기</a>
+                        </div>
+                        """
+                        icon_prefix = 'fa' if conf['icon'] in ['fire-extinguisher','bell','snowflake-o','shield','user', 'home'] else 'glyphicon'
+                        folium.Marker([lat,lon], popup=folium.Popup(popup_html, max_width=250), tooltip=f"{clean_name(name)}", icon=folium.Icon(color=display_color, icon=conf['icon'], prefix=icon_prefix)).add_to(marker_cluster)
 
-                            popup_html = f"""
-                            <div style="width:200px">
-                                <b>{clean_name(name)}</b><br>
-                                <span style="color:gray; font-size:0.9em">{svc_name}</span><br>
-                                <hr style="margin:5px 0">
-                                📏 <b>거리:</b> {dist*1000:.0f}m<br>
-                                🏃 <b>도보:</b> 약 {walk_str}<br>
-                                <hr style="margin:5px 0">
-                                <a href="{kakao_map_url}" target="_blank"
-                                style="background-color:#FEE500; color:black; padding:5px 10px; text-decoration:none; border-radius:5px; font-weight:bold; font-size:0.9em; display:block; text-align:center;">
-                                카카오맵 길찾기
-                                </a>
-                            </div>
-                            """
-                            icon_prefix = 'fa' if conf['icon'] in ['fire-extinguisher','bell','snowflake-o','shield','user', 'home'] else 'glyphicon'
-
-                            folium.Marker([lat,lon], popup=folium.Popup(popup_html, max_width=250),
-                                          tooltip=f"{clean_name(name)} (도보 {walk_str})",
-                                          icon=folium.Icon(color=display_color, icon=conf['icon'], prefix=icon_prefix)).add_to(marker_cluster)
-
-                st.session_state['search_result_text'] = f"📍 기준점: **{my_name}** / 📊 검색 결과: **{total_count}건**"
-                st.session_state['generated_map'] = m
+            st.session_state['search_result_text'] = f"📍 기준점: **{my_name}** / 📊 검색 결과: **{total_count}건**"
+            st.session_state['generated_map'] = m
 
     # ==========================================
     # 결과 화면 출력
@@ -306,12 +289,7 @@ def main():
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         file_name = f"suwon_map_{timestamp}.html"
         m_html = st.session_state['generated_map'].get_root().render()
-        st.download_button(
-            label="📥 HTML 파일로 지도 다운로드",
-            data=m_html,
-            file_name=file_name,
-            mime="text/html"
-        )
+        st.download_button(label="📥 HTML 파일로 지도 다운로드", data=m_html, file_name=file_name, mime="text/html")
 
 if __name__=="__main__":
     main()
