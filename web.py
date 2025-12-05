@@ -89,7 +89,7 @@ def get_straight_distance(lat1, lon1, lat2, lon2):
 def get_walking_time(dist_km):
     return dist_km / 4 * 60
 
-@st.cache_data(ttl=600) # Streamlit 캐싱 기능을 추가하여 속도 최적화
+@st.cache_data(ttl=600)
 def get_gg_data_all_pages(url):
     all_rows = []
     for page in range(1, 20):
@@ -115,7 +115,6 @@ def get_gg_data_all_pages(url):
 # 4. Streamlit 메인 UI 및 실행 로직
 # ==========================================
 def main():
-    # 페이지 설정 (전체 화면 사용)
     st.set_page_config(page_title="수원시 통합 안전 지도", layout="wide", page_icon="🗺️")
     
     st.title("🚽 수원시 통합 안전 지도")
@@ -136,29 +135,46 @@ def main():
         selected_service_name = st.selectbox("세부 시설 선택", options=services_list)
         selected_services = [selected_service_name]
 
-        # 3. 위치 입력
-        user_loc = st.text_input("현재 위치 입력", value="수원역", help="'내 위치'라고 입력하면 현재 접속 위치를 찾습니다.")
-        
-        # 검색 버튼
-        run_search = st.button("지도 생성하기 🚀")
+        st.markdown("---")
+        st.subheader("📍 위치 설정")
+
+        # 3. [개선] 위치 입력 방식 (텍스트 입력 vs 버튼)
+        # 폼(Form)을 사용하여 엔터키 입력 등 사용자 편의성 증대
+        with st.form(key='search_form'):
+            user_input_text = st.text_input("장소 이름으로 검색", placeholder="예: 수원역, 아주대")
+            
+            col1, col2 = st.columns([1, 1])
+            with col1:
+                submit_text = st.form_submit_button("🔍 장소 검색")
+            with col2:
+                # 이 버튼은 폼 바깥에서 별도로 처리하는게 UX상 좋지만, 
+                # 레이아웃을 위해 폼 내부에 두되, 로직에서 분기 처리
+                submit_my_loc = st.form_submit_button("📍 내 위치로")
 
     # ==========================================
     # 지도 생성 로직
     # ==========================================
     
-    # 세션 상태 초기화 (지도가 사라지지 않게 하기 위함)
     if 'generated_map' not in st.session_state:
         st.session_state['generated_map'] = None
     if 'search_result_text' not in st.session_state:
         st.session_state['search_result_text'] = ""
 
-    # 버튼을 눌렀을 때 실행
-    if run_search:
+    # 검색 실행 조건 확인
+    target_location = None
+    
+    if submit_my_loc:
+        target_location = "내위치" # 버튼 누르면 강제로 '내위치' 할당
+    elif submit_text and user_input_text:
+        target_location = user_input_text # 텍스트 입력값 사용
+
+    # 실제 검색 로직 실행
+    if target_location:
         with st.spinner("📍 위치를 찾고 데이터를 분석 중입니다..."):
-            my_lat, my_lon, my_name = get_location_smart(user_loc)
+            my_lat, my_lon, my_name = get_location_smart(target_location)
             
             if not my_lat:
-                st.error(f"❌ '{user_loc}' 위치를 찾을 수 없습니다. 다시 시도해주세요.")
+                st.error(f"❌ '{target_location}' 위치를 찾을 수 없습니다.")
             else:
                 # 좌표 컬럼 정의
                 coordinate_columns = [
@@ -176,7 +192,7 @@ def main():
                 folium.Marker([my_lat,my_lon], popup=f"<b>출발: {clean_name(my_name)}</b>", 
                               icon=folium.Icon(color='black', icon='home', prefix='fa')).add_to(m)
                 
-                # MarkerCluster 생성 (JS 커스텀 함수 유지)
+                # MarkerCluster 생성 (JS 커스텀 함수)
                 icon_create_function = """
                     function(cluster) {
                         var count = cluster.getChildCount();
@@ -208,7 +224,6 @@ def main():
                     conf = category['services'][svc_name]
                     radius_km = conf['radius']
                     
-                    # 지도 반경 표시
                     folium.Circle(
                         location=[my_lat, my_lon],
                         radius=radius_km*1000,
@@ -217,11 +232,9 @@ def main():
                         dash_array='5,5'
                     ).add_to(m)
 
-                    # 데이터 수집
                     rows = get_gg_data_all_pages(conf['url'])
-                    
-                    # PANDAS 전처리
                     df = pd.DataFrame(rows)
+                    
                     coordinate_columns_flat = [col for pair in coordinate_columns for col in pair]
                     for col in coordinate_columns_flat:
                         if col in df.columns:
@@ -232,7 +245,6 @@ def main():
                     
                     total_count += len(df_suwon)
 
-                    # 마커 생성 루프
                     for index, row in df_suwon.iterrows():
                         name = row.get("PBCTLT_PLC_NM") or row.get("INSTL_PLC_NM") or row.get("INSTL_PLACE") or \
                                row.get("FACLT_NM") or row.get("EQUP_NM") or row.get("TPLT_NM") or row.get("REFINE_ROADNM_ADDR") or "이름 미상"
@@ -259,7 +271,6 @@ def main():
                             walk_str = f"{int(walk_time)}분" if walk_time<60 else f"{walk_time/60:.1f}시간"
                             display_color = conf['color'] if dist <= radius_km else 'lightgray'
 
-                            # [유지] Kakao Map URL 길찾기 (좌표 기반)
                             kakao_map_url = f"https://map.kakao.com/link/to/{clean_name(name)},{lat},{lon}/from/{clean_name(my_name)},{my_lat},{my_lon}"
 
                             popup_html = f"""
@@ -282,20 +293,16 @@ def main():
                                           tooltip=f"{clean_name(name)} (도보 {walk_str})",
                                           icon=folium.Icon(color=display_color, icon=conf['icon'], prefix=icon_prefix)).add_to(marker_cluster)
 
-                # 결과 텍스트 및 지도 객체를 세션 상태에 저장 (핵심: 사라짐 방지)
                 st.session_state['search_result_text'] = f"📍 기준점: **{my_name}** / 📊 검색 결과: **{total_count}건**"
                 st.session_state['generated_map'] = m
 
     # ==========================================
-    # 결과 화면 출력 (세션 상태에 저장된 값이 있으면 표시)
+    # 결과 화면 출력
     # ==========================================
     if st.session_state['generated_map'] is not None:
         st.success(st.session_state['search_result_text'])
-        
-        # 지도 출력 (width=100% 로 설정)
         st_folium(st.session_state['generated_map'], width=700, height=500, returned_objects=[])
         
-        # 파일 다운로드 버튼 (선택 사항)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         file_name = f"suwon_map_{timestamp}.html"
         m_html = st.session_state['generated_map'].get_root().render()
