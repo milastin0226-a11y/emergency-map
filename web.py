@@ -8,17 +8,22 @@ from math import radians, sin, cos, sqrt, atan2
 import re
 
 # ==========================================
-# 1. 설정 및 API 키
+# 1. 설정 및 API 키 (수정된 버전)
 # ==========================================
 st.set_page_config(page_title="수원시 안전 지도", layout="wide", page_icon="🏥")
 
-# Streamlit Secrets에서 키 가져오기
 try:
-    GG_API_KEY = st.secrets["GG_API_KEY"]
-    KAKAO_API_KEY = st.secrets["KAKAO_API_KEY"]
-except FileNotFoundError:
-    # 로컬 테스트용 (secrets.toml이 없을 때를 대비해 기본값 혹은 에러 처리)
-    st.error("API 키 설정이 필요합니다.")
+    # secrets가 아예 없는 경우(로컬)나 키가 없는 경우를 모두 대비
+    if "GG_API_KEY" in st.secrets and "KAKAO_API_KEY" in st.secrets:
+        GG_API_KEY = st.secrets["GG_API_KEY"]
+        KAKAO_API_KEY = st.secrets["KAKAO_API_KEY"]
+    else:
+        # 키가 없으면 로컬 테스트용 빈 값 혹은 경고
+        # (배포 환경에서는 이 부분이 실행되면 안 됨)
+        st.error("🚨 Secrets에 API 키가 설정되지 않았습니다! 대시보드 설정을 확인하세요.")
+        st.stop()
+except Exception as e:
+    st.error(f"🚨 설정 오류 발생: {e}")
     st.stop()
 
 CATEGORY_CONFIG = {
@@ -81,3 +86,4 @@ def get_gg_data_all_pages(url):
                 break
         except:
             break
+
