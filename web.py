@@ -3,7 +3,7 @@ import requests
 import folium
 from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
-# [추가됨] GPS 기능을 위한 라이브러리
+# GPS 라이브러리
 from streamlit_js_eval import get_geolocation
 import os
 import re
@@ -59,7 +59,6 @@ def get_coords_from_address(address):
     return None, None
 
 def get_location_smart(user_input):
-    # [변경] IP 기반 로직 제거 -> GPS 버튼으로 대체됨
     # 오직 텍스트 검색만 수행
     headers = {"Authorization": f"KakaoAK {KAKAO_API_KEY}"}
     search_query = user_input if "수원" in user_input else f"수원시 {user_input}"
@@ -114,7 +113,7 @@ def main():
     st.title("🚽 수원시 통합 안전 지도")
     st.markdown("---")
 
-    # 세션 상태 초기화 (지도 및 현재 위치 저장)
+    # 세션 상태 초기화
     if 'generated_map' not in st.session_state:
         st.session_state['generated_map'] = None
     if 'search_result_text' not in st.session_state:
@@ -144,9 +143,14 @@ def main():
         st.markdown("---")
         st.subheader("📍 위치 설정")
 
-        # [변경] 실제 GPS 좌표 요청 버튼 (streamlit-js-eval 사용)
-        st.write("📡 GPS로 내 위치 찾기")
-        gps_data = get_geolocation(component_key='get_gps', button_text="📍 내 현재 위치로 검색")
+        # [수정됨] GPS 체크박스 (버튼 아님)
+        st.write("📡 GPS 설정")
+        use_gps = st.checkbox("📍 GPS 위치추적 켜기", help="체크하면 브라우저 위치 권한을 요청합니다.")
+        
+        gps_data = None
+        if use_gps:
+            # 오류가 발생했던 button_text 파라미터 삭제
+            gps_data = get_geolocation(component_key='get_gps')
 
         st.markdown("---")
         st.write("🏙️ 장소 이름으로 검색")
@@ -161,19 +165,19 @@ def main():
     
     should_run_analysis = False
 
-    # 1. GPS 데이터가 새로 들어왔는지 확인
-    if gps_data and 'coords' in gps_data:
-        # 타임스탬프를 확인하여 새로운 클릭인지 확인 (혹은 최초 실행)
+    # 1. GPS 데이터 확인
+    if use_gps and gps_data and 'coords' in gps_data:
         current_timestamp = gps_data.get('timestamp', 0)
+        # 타임스탬프가 다르거나, 현재 활성 좌표가 없을 때 갱신
         if current_timestamp != st.session_state['last_gps_timestamp']:
             st.session_state['active_lat'] = gps_data['coords']['latitude']
             st.session_state['active_lon'] = gps_data['coords']['longitude']
             st.session_state['active_name'] = "📍 현위치 (GPS)"
             st.session_state['last_gps_timestamp'] = current_timestamp
             should_run_analysis = True
-            st.sidebar.success("✅ GPS 위치 수신 성공!")
+            st.sidebar.success("✅ GPS 수신 완료!")
 
-    # 2. 텍스트 검색 버튼을 눌렀는지 확인 (GPS보다 우선 실행하여 덮어씌움)
+    # 2. 텍스트 검색 버튼 확인 (GPS보다 우선)
     if submit_text and user_input_text:
         my_lat, my_lon, my_name = get_location_smart(user_input_text)
         if my_lat:
@@ -195,19 +199,16 @@ def main():
             my_lon = st.session_state['active_lon']
             my_name = st.session_state['active_name']
 
-            # 좌표 컬럼 정의
             coordinate_columns = [
                 ("REFINE_WGS84_LAT","REFINE_WGS84_LOGT"), ("LAT","LON"),
                 ("TPLT_WGS84_LAT","TPLT_WGS84_LOGT"), ("위도","경도"),
                 ("Y","X"), ("X_COORD","Y_COORD"), ("X_WGS","Y_WGS")
             ]
 
-            # 지도 객체 생성
             m = folium.Map(location=[my_lat, my_lon], zoom_start=15)
             folium.Marker([my_lat,my_lon], popup=f"<b>출발: {clean_name(my_name)}</b>", 
                           icon=folium.Icon(color='black', icon='home', prefix='fa')).add_to(m)
             
-            # MarkerCluster 생성
             icon_create_function = """
                 function(cluster) {
                     var count = cluster.getChildCount();
