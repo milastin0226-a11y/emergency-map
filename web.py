@@ -12,9 +12,15 @@ import re
 # ==========================================
 st.set_page_config(page_title="수원시 안전 지도", layout="wide", page_icon="🏥")
 
-# 보안을 위해 실제 배포 시에는 st.secrets를 사용하는 것이 좋습니다.
-GG_API_KEY = "42334a0cf97944c9b1ad81d6dd2dc17a"
-KAKAO_API_KEY = "72968d96a40f21a36d5d01d647daf602"
+# Streamlit Secrets에서 키를 가져옵니다.
+# 로컬에서 실행할 때는 .streamlit/secrets.toml 파일이 필요하며,
+# 클라우드 배포 시에는 대시보드에서 설정합니다.
+try:
+    GG_API_KEY = st.secrets["GG_API_KEY"]
+    KAKAO_API_KEY = st.secrets["KAKAO_API_KEY"]
+except FileNotFoundError:
+    st.error("API 키를 찾을 수 없습니다. secrets.toml 파일을 확인해주세요.")
+    st.stop()
 
 CATEGORY_CONFIG = {
     "🏥 의료/건강": {"services": {
@@ -199,4 +205,48 @@ def main():
                         count += 1
                         
                         # 이름 결정
-                        name = row.get("PBCTLT_PLC_NM") or row.get("FACLT_NM") or row.get("REFINE_ROADNM
+                        name = row.get("PBCTLT_PLC_NM") or row.get("FACLT_NM") or row.get("REFINE_ROADNM_ADDR") or "이름 없음"
+                        clean_dest_name = clean_name(name)
+                        
+                        walk_time = dist / 4 * 60
+                        walk_str = f"{int(walk_time)}분" if walk_time < 60 else f"{walk_time/60:.1f}시간"
+                        
+                        # 반경 내/외 색상 구분
+                        icon_color = conf['color'] if dist <= conf['radius'] else 'gray'
+                        
+                        # 카카오맵 링크 생성 로직 (요청하신 부분)
+                        # sName=현위치 (GPS인 경우) 또는 입력한장소이름
+                        # eName=도착지이름
+                        kakao_link = f"https://map.kakao.com/?sName={start_label_for_link}&eName={clean_dest_name}"
+                        
+                        popup_html = f"""
+                        <div style="width:200px; font-family:sans-serif;">
+                            <b style="font-size:1.1em;">{clean_dest_name}</b><br>
+                            <span style="color:gray; font-size:0.8em">{selected_svc_name}</span>
+                            <hr style="margin:5px 0">
+                            📏 거리: <b>{dist*1000:.0f}m</b><br>
+                            🏃 도보: 약 {walk_str}<br>
+                            <hr style="margin:5px 0">
+                            <a href="{kakao_link}" target="_blank"
+                            style="background-color:#FEE500; color:black; padding:8px; 
+                            text-decoration:none; border-radius:5px; display:block; text-align:center; font-weight:bold;">
+                            카카오맵 길찾기 🚀
+                            </a>
+                        </div>
+                        """
+                        
+                        icon_prefix = 'fa' if conf['icon'] in ['heart', 'bell', 'fire-extinguisher', 'info-sign', 'plus'] else 'glyphicon'
+                        
+                        folium.Marker(
+                            [lat, lon],
+                            popup=folium.Popup(popup_html, max_width=250),
+                            tooltip=f"{clean_dest_name} ({int(dist*1000)}m)",
+                            icon=folium.Icon(color=icon_color, icon=conf['icon'], prefix=icon_prefix)
+                        ).add_to(marker_cluster)
+
+            st.write(f"📊 검색 결과: 반경 {conf['radius']}km 내외 **{count}개** 시설 발견")
+            st_folium(m, width="100%", height=500)
+
+if __name__ == "__main__":
+
+    main()
