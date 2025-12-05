@@ -1,301 +1,229 @@
 import streamlit as st
+import requests
+import folium
+from folium.plugins import MarkerCluster, LocateControl
 from streamlit_folium import st_folium
 from streamlit_js_eval import get_geolocation
-import folium
-import requests
 import re
 from math import radians, sin, cos, sqrt, atan2
 
 # ==========================================
-# 1. 페이지 설정 및 API 키
+# 1. 페이지 및 API 설정
 # ==========================================
-st.set_page_config(page_title="수원시 안전 지도", page_icon="🚑", layout="wide")
+st.set_page_config(
+    page_title="수원시 안전 지도", 
+    layout="wide", 
+    page_icon="🏥",
+    initial_sidebar_state="expanded"
+)
 
-# API 키 설정 (Secrets가 없으면 코드 내 키 사용)
-try:
-    GG_API_KEY = st.secrets["GG_API_KEY"]
-    KAKAO_API_KEY = st.secrets["KAKAO_API_KEY"]
-except:
-    GG_API_KEY = "42334a0cf97944c9b1ad81d6dd2dc17a"
-    KAKAO_API_KEY = "72968d96a40f21a36d5d01d647daf602"
+# API 키 확인
+if "GG_API_KEY" not in st.secrets or "KAKAO_API_KEY" not in st.secrets:
+    st.error("🚨 Secrets 설정이 없습니다. Streamlit 대시보드에서 API 키를 설정해주세요.")
+    st.stop()
+
+GG_API_KEY = st.secrets["GG_API_KEY"]
+KAKAO_API_KEY = st.secrets["KAKAO_API_KEY"]
 
 # ==========================================
-# 2. 카테고리 설정 (새로 주신 코드 반영)
+# 2. 데이터 및 함수 설정
 # ==========================================
 CATEGORY_CONFIG = {
-    "1": {
-        "name": "🏥 의료/건강",
-        "services": {
-            "AED(제세동기)": {"url": "https://openapi.gg.go.kr/Aedstus", "icon": "heart", "color": "red", "radius": 1.0},
-            "소아야간진료": {"url": "https://openapi.gg.go.kr/ChildNightTreatHosptl", "icon": "plus", "color": "green", "radius": 5.0}
-        }
-    },
-    "2": {
-        "name": "🚨 안전/비상",
-        "services": {
-            "안전비상벨": {"url": "https://openapi.gg.go.kr/Safeemrgncbell", "icon": "bell", "color": "orange", "radius": 0.5},
-            "옥내소화전": {"url": "https://openapi.gg.go.kr/FirefgtFacltDevice", "icon": "fire-extinguisher", "color": "darkred", "radius": 0.5},
-            "제설함": {"url": "https://openapi.gg.go.kr/ClsnowbxInstlStus", "icon": "snowflake-o", "color": "cadetblue", "radius": 1.0}
-        }
-    },
-    "3": {
-        "name": "🏃 대피시설",
-        "services": {
-            "민방위대피소": {"url": "https://openapi.gg.go.kr/CivilDefenseEvacuation", "icon": "shield", "color": "black", "radius": 2.0}
-        }
-    },
-    "4": {
-        "name": "🚽 편의시설",
-        "services": {
-            "공중화장실": {"url": "https://openapi.gg.go.kr/Publtolt", "icon": "info-sign", "color": "purple", "radius": 1.5}
-        }
-    }
+    "🏥 의료/건강": {"services": {
+        "AED(제세동기)": {"url": "https://openapi.gg.go.kr/Aedstus", "icon": "heart", "color": "red", "radius": 0.5},
+        "소아야간진료": {"url": "https://openapi.gg.go.kr/ChildNightTreatHosptl", "icon": "plus", "color": "green", "radius": 3.0}
+    }},
+    "🚨 안전/비상": {"services": {
+        "안전비상벨": {"url": "https://openapi.gg.go.kr/Safeemrgncbell", "icon": "bell", "color": "orange", "radius": 0.2},
+        "옥내소화전": {"url": "https://openapi.gg.go.kr/FirefgtFacltDevice", "icon": "fire-extinguisher", "color": "darkred", "radius": 0.1}
+    }},
+    "🚽 편의시설": {"services": {
+        "공중화장실": {"url": "https://openapi.gg.go.kr/Publtolt", "icon": "info-sign", "color": "purple", "radius": 1.0}
+    }}
 }
 
-# ==========================================
-# 3. 핵심 함수들 (새 코드 로직 적용)
-# ==========================================
 def clean_name(name):
-    return re.sub(r'\[.*?\]\s*', '', name)
+    return re.sub(r'\[.*?\]\s*', '', str(name))
 
 def get_coords_from_address(address):
-    url = "https://dapi.kakao.com/v2/local/search/address.json"
     headers = {"Authorization": f"KakaoAK {KAKAO_API_KEY}"}
     try:
+        url = "https://dapi.kakao.com/v2/local/search/keyword.json"
         res = requests.get(url, headers=headers, params={"query": address}).json()
         if res.get('documents'):
             item = res['documents'][0]
-            return float(item['y']), float(item['x'])
-    except: pass
-    return None, None
-
-def get_location_smart(user_input):
-    headers = {"Authorization": f"KakaoAK {KAKAO_API_KEY}"}
-    if "수원" not in user_input:
-        search_query = f"수원시 {user_input}"
-    else:
-        search_query = user_input
-        
-    try:
-        url_key = "https://dapi.kakao.com/v2/local/search/keyword.json"
-        res = requests.get(url_key, headers=headers, params={"query": search_query}).json()
-        if res.get('documents'):
-            item = res['documents'][0]
-            # 장소명도 함께 반환
-            return float(item['y']), float(item['x']), f"{item['place_name']}"
-    except: pass
+            return float(item['y']), float(item['x']), item['place_name']
+    except Exception as e:
+        st.error(f"주소 검색 오류: {e}")
     return None, None, None
 
 def get_straight_distance(lat1, lon1, lat2, lon2):
     R = 6371
     dlat = radians(lat2 - lat1)
     dlon = radians(lon2 - lon1)
-    a = sin(dlat / 2)**2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2)**2
-    c = 2 * atan2(sqrt(a), sqrt(1 - a))
-    return R * c
+    a = sin(dlat/2)**2 + cos(radians(lat1))*cos(radians(lat2))*sin(dlon/2)**2
+    c = 2*atan2(sqrt(a), sqrt(1-a))
+    return R*c
 
-def get_navigation_time(origin_x, origin_y, dest_x, dest_y):
-    url = "https://apis-navi.kakaomobility.com/v1/directions"
-    headers = {"Authorization": f"KakaoAK {KAKAO_API_KEY}", "Content-Type": "application/json"}
-    params = {"origin": f"{origin_x},{origin_y}", "destination": f"{dest_x},{dest_y}", "priority": "RECOMMEND"}
-    try:
-        response = requests.get(url, headers=headers, params=params)
-        if response.status_code == 200:
-            data = response.json()
-            if data.get('routes'):
-                return data['routes'][0]['summary']['duration'] / 60
-    except: pass
-    return None
-
-def get_walking_time(dist_km):
-    return dist_km * 15 # 시속 4km 기준
-
-def get_gg_data(url):
-    params = {"KEY": GG_API_KEY, "Type": "json", "pIndex": 1, "pSize": 1000, "SIGUN_NM": "수원시"}
-    try:
-        res = requests.get(url, params=params).json()
-        key = list(res.keys())[0]
-        if "row" in res[key][1]: return res[key][1]["row"]
-    except: pass
-    return []
+@st.cache_data(ttl=3600)
+def get_gg_data_all_pages(url):
+    all_rows = []
+    for page in range(1, 10): # 속도를 위해 10페이지까지만
+        params = {"KEY": GG_API_KEY, "Type": "json", "pIndex": page, "pSize": 1000}
+        try:
+            res = requests.get(url, params=params).json()
+            found = False
+            for key in res.keys():
+                if isinstance(res[key], list):
+                    for item in res[key]:
+                        if isinstance(item, dict) and "row" in item:
+                            rows = item["row"]
+                            if rows:
+                                all_rows.extend(rows)
+                                found = True
+            if not found:
+                break
+        except:
+            break
+    return all_rows
 
 # ==========================================
-# 4. 화면 구성 및 상태 관리 (세션 스테이트)
+# 3. 메인 앱 로직
 # ==========================================
-
-# 상태값 초기화 (새로고침 되어도 데이터 유지)
-if 'search_done' not in st.session_state:
-    st.session_state['search_done'] = False
-if 'my_lat' not in st.session_state:
-    st.session_state['my_lat'] = None
-if 'my_lon' not in st.session_state:
-    st.session_state['my_lon'] = None
-if 'my_name' not in st.session_state:
-    st.session_state['my_name'] = ""
-if 'candidates' not in st.session_state:
-    st.session_state['candidates'] = []
-
-st.title("🚑 수원시 통합 안전 지도")
-st.write("GPS로 내 위치를 찾거나, 직접 입력해서 주변 시설을 검색하세요.")
-
-# 사이드바 구성
-with st.sidebar:
-    st.header("🔍 검색 설정")
+def main():
+    st.title("🚽 수원시 통합 안전/편의 지도")
     
-    # 1. 카테고리 선택 (이름으로 선택하게 변경)
-    # 딕셔너리를 보기 좋게 이름:키 형태로 매핑
-    category_options = {val['name']: key for key, val in CATEGORY_CONFIG.items()}
-    selected_name = st.selectbox("카테고리 선택", list(category_options.keys()))
-    
-    # 선택된 카테고리 정보 가져오기
-    selected_key = category_options[selected_name]
-    selected_category = CATEGORY_CONFIG[selected_key]
-    
-    st.markdown("---")
-    st.subheader("1. 📡 내 위치로 찾기 (GPS)")
-    
-    # GPS 정보 가져오기 (히든 처리됨)
-    gps_loc = get_geolocation()
-    
-    if gps_loc:
-        btn_gps = st.button("📍 내 위치(GPS)로 검색 실행")
-        if btn_gps:
-            st.session_state['my_lat'] = gps_loc['coords']['latitude']
-            st.session_state['my_lon'] = gps_loc['coords']['longitude']
-            # [중요] GPS 사용 시 출발지 이름을 '내위치'로 설정
-            st.session_state['my_name'] = "내위치"
-            st.session_state['search_done'] = False # 새 좌표이므로 검색 다시 해야 함
+    # 세션 상태 초기화
+    if 'search_data' not in st.session_state:
+        st.session_state['search_data'] = None
 
-    st.markdown("---")
-    st.subheader("2. ⌨️ 직접 입력해서 찾기")
-    user_input = st.text_input("위치 입력", placeholder="예: 수원역, 매탄동")
-    btn_manual = st.button("🔍 주소로 검색 실행")
+    # 사이드바
+    st.sidebar.header("🔍 검색 설정")
+    main_cat = st.sidebar.selectbox("대분류 선택", list(CATEGORY_CONFIG.keys()))
+    sub_services = CATEGORY_CONFIG[main_cat]['services']
+    selected_svc_name = st.sidebar.selectbox("소분류 선택", list(sub_services.keys()))
+    conf = sub_services[selected_svc_name]
+    
+    st.sidebar.markdown("---")
+    
+    # 위치 설정 방식 선택 (GPS 기능 부활)
+    location_mode = st.sidebar.radio("위치 설정", ["📍 주소/장소 검색", "📡 내 현재 위치(GPS)"])
+    
+    gps_lat, gps_lon = None, None
 
-    if btn_manual and user_input:
-        lat, lon, name = get_location_smart(user_input)
-        if lat:
-            st.session_state['my_lat'] = lat
-            st.session_state['my_lon'] = lon
-            # [중요] 직접 입력 시 출발지 이름을 '검색된 장소명'으로 설정
-            st.session_state['my_name'] = clean_name(name)
-            st.session_state['search_done'] = False
+    if location_mode == "📡 내 현재 위치(GPS)":
+        loc = get_geolocation()
+        if loc:
+            gps_lat = loc['coords']['latitude']
+            gps_lon = loc['coords']['longitude']
+            st.sidebar.success(f"GPS 수신 완료! ({gps_lat:.4f}, {gps_lon:.4f})")
         else:
-            st.error("위치를 찾을 수 없습니다.")
-
-# ==========================================
-# 5. 검색 로직 (조건 만족 시 실행)
-# ==========================================
-
-# 좌표는 있는데 아직 검색 결과가 없다면 -> 데이터 수집 시작
-if st.session_state['my_lat'] and not st.session_state['search_done']:
-    my_lat = st.session_state['my_lat']
-    my_lon = st.session_state['my_lon']
-    
-    with st.spinner(f"📡 '{st.session_state['my_name']}' 기준으로 주변 시설 탐색 중..."):
-        candidates = []
-        for svc_name, config in selected_category['services'].items():
-            rows = get_gg_data(config['url'])
+            st.sidebar.warning("위치 권한을 허용하거나 잠시 기다려주세요.")
             
-            for row in rows:
-                try:
-                    name = row.get("INSTL_PLACE") or row.get("FACLT_NM") or row.get("EQUP_NM") or row.get("REFINE_ROADNM_ADDR")
-                    if not name: name = "이름 미상"
-                    
-                    lat, lon = None, None
-                    # 좌표 우선 확인
-                    if row.get("REFINE_WGS84_LAT"):
-                        try:
-                            lat = float(row["REFINE_WGS84_LAT"])
-                            lon = float(row["REFINE_WGS84_LOGT"])
-                        except: pass
-                    
-                    # 좌표 없으면 주소로 찾기
-                    if lat is None:
-                        addr = row.get("REFINE_ROADNM_ADDR") or row.get("REFINE_LOTNO_ADDR")
-                        if addr:
-                            lat, lon = get_coords_from_address(addr)
+    else:
+        search_query = st.sidebar.text_input("검색할 장소", value="수원시청")
 
-                    if lat and lon:
-                        dist = get_straight_distance(my_lat, my_lon, lat, lon)
-                        if dist <= config['radius']:
-                            candidates.append({
-                                "name": name, "lat": lat, "lon": lon, "dist": dist,
-                                "type": svc_name, "config": config
-                            })
-                except: continue
-        
-        # 결과 저장
-        st.session_state['candidates'] = sorted(candidates, key=lambda x: x['dist'])
-        st.session_state['search_done'] = True
+    # 검색 버튼
+    if st.sidebar.button("시설 찾기 시작", type="primary"):
+        lat, lon, name, label = None, None, None, ""
 
-# ==========================================
-# 6. 결과 출력 및 지도 생성
-# ==========================================
-
-if st.session_state['search_done']:
-    my_lat = st.session_state['my_lat']
-    my_lon = st.session_state['my_lon']
-    my_name = st.session_state['my_name'] # 설정된 출발지 이름
-    candidates = st.session_state['candidates']
-
-    st.success(f"📍 출발: {my_name} | 주변 {len(candidates)}개 발견")
-
-    # 지도 생성
-    m = folium.Map(location=[my_lat, my_lon], zoom_start=15)
-    folium.Marker(
-        [my_lat, my_lon], 
-        popup=f"<b>출발: {my_name}</b>", 
-        icon=folium.Icon(color='black', icon='home')
-    ).add_to(m)
-
-    LIMIT_NAVI = 15 # 요청하신 대로 15개
-    
-    for i, item in enumerate(candidates):
-        # 도보 시간
-        walk_time = get_walking_time(item['dist'])
-        walk_str = f"{int(walk_time)}분" if walk_time < 60 else f"{walk_time/60:.1f}시간"
-
-        # 운전 시간 (API 호출)
-        drive_str = "정보 없음"
-        if i < LIMIT_NAVI:
-            if 'drive_time' not in item:
-                time = get_navigation_time(my_lon, my_lat, item['lon'], item['lat'])
-                item['drive_time'] = f"{int(time)}분" if time else "정보 없음"
-            drive_str = item['drive_time']
+        if location_mode == "📡 내 현재 위치(GPS)":
+            if gps_lat and gps_lon:
+                lat, lon = gps_lat, gps_lon
+                name = "내 현재 위치"
+                label = "현위치" # 카카오맵 길찾기용 매직 키워드
+            else:
+                st.error("GPS 정보를 아직 받아오지 못했습니다.")
         else:
-            drive_str = "거리순 제외"
+            # 주소 검색
+            full_query = search_query if "수원" in search_query else f"수원 {search_query}"
+            lat, lon, name = get_coords_from_address(full_query)
+            if lat:
+                label = clean_name(name)
+            else:
+                st.error("장소를 찾을 수 없습니다.")
 
-        # [핵심] Kakao Map 링크 생성 (동적 출발지 반영)
-        start_name = clean_name(my_name)
-        end_name = item['name']
-        map_link = f"https://map.kakao.com/?sName={start_name}&eName={end_name}"
+        # 좌표가 유효하면 세션에 저장
+        if lat and lon:
+            st.session_state['search_data'] = {
+                'lat': lat, 'lon': lon, 'name': name, 'label': label
+            }
+
+    # 지도 그리기 (세션에 데이터가 있으면 항상 표시)
+    if st.session_state['search_data']:
+        data = st.session_state['search_data']
+        my_lat, my_lon = data['lat'], data['lon']
         
-        conf = item['config']
-        icon_prefix = 'fa' if conf['icon'] in ['fire-extinguisher', 'bell', 'snowflake-o', 'shield', 'user'] else 'glyphicon'
+        st.markdown(f"### 📍 기준: **{data['name']}** 주변 {selected_svc_name}")
+        
+        with st.spinner("시설 데이터를 분석 중입니다..."):
+            m = folium.Map(location=[my_lat, my_lon], zoom_start=15)
+            
+            # 내 위치
+            folium.Marker(
+                [my_lat, my_lon],
+                popup="<b>출발지</b>",
+                icon=folium.Icon(color='black', icon='home', prefix='fa')
+            ).add_to(m)
+            
+            folium.Circle(
+                [my_lat, my_lon], radius=conf['radius']*1000, 
+                color=conf['color'], fill=True, fill_opacity=0.1
+            ).add_to(m)
+            
+            rows = get_gg_data_all_pages(conf['url'])
+            marker_cluster = MarkerCluster().add_to(m)
+            count = 0
+            
+            coord_cols = [("REFINE_WGS84_LAT","REFINE_WGS84_LOGT"), ("LAT","LON"), ("WGS84_LAT","WGS84_LOGT")]
 
-        popup_html = f"""
-        <div style="width:200px">
-            <b>{item['name']}</b><br>
-            <span style="color:gray">{item['type']}</span><br>
-            <hr style="margin:5px 0">
-            📏 {item['dist']*1000:.0f}m<br>
-            🏃 도보: {walk_str}<br>
-            🚗 운전: {drive_str}<br>
-            <hr style="margin:5px 0">
-            <a href="{map_link}" target="_blank" 
-                style="background-color:#FEE500; color:black; padding:5px 10px; text-decoration:none; border-radius:5px; font-weight:bold; font-size:0.9em; display:block; text-align:center;">
-                카카오맵 길찾기 (From: {start_name})
-            </a>
-        </div>
-        """
-        folium.Marker(
-            [item['lat'], item['lon']],
-            popup=folium.Popup(popup_html, max_width=250),
-            tooltip=f"{item['name']} (도보 {walk_str})",
-            icon=folium.Icon(color=conf['color'], icon=conf['icon'], prefix=icon_prefix)
-        ).add_to(m)
+            for row in rows:
+                addr = str(row.get("REFINE_ROADNM_ADDR", "") or "")
+                # 수원 근처 필터링 (너무 넓게 잡히는 것 방지)
+                if not any(x in addr for x in ["수원", "영통", "권선", "팔달", "장안"]):
+                    continue
 
-    if not candidates:
-        st.warning("⚠️ 선택하신 반경 내에 해당 시설이 없습니다.")
+                t_lat, t_lon = None, None
+                for lat_c, lon_c in coord_cols:
+                    try:
+                        temp_lat, temp_lon = float(row.get(lat_c,0)), float(row.get(lon_c,0))
+                        if 33 < temp_lat < 39: # 유효 좌표 체크
+                            t_lat, t_lon = temp_lat, temp_lon
+                            break
+                    except: continue
+                
+                if t_lat and t_lon:
+                    dist = get_straight_distance(my_lat, my_lon, t_lat, t_lon)
+                    
+                    if dist <= conf['radius'] * 1.5:
+                        count += 1
+                        place_name = clean_name(row.get("PBCTLT_PLC_NM") or row.get("FACLT_NM") or row.get("REFINE_ROADNM_ADDR") or "시설")
+                        
+                        # 카카오맵 링크 (출발지 -> 도착지)
+                        # GPS일 경우: sName=현위치, 검색일 경우: sName=검색어
+                        link = f"https://map.kakao.com/?sName={data['label']}&eName={place_name}"
+                        
+                        popup_html = f"""
+                        <div style="width:160px; font-family:sans-serif;">
+                            <b style="font-size:14px">{place_name}</b><br>
+                            <span style="color:#666; font-size:12px">거리: {int(dist*1000)}m</span><br>
+                            <a href="{link}" target="_blank" style="
+                                display:block; margin-top:5px; background:#FEE500; 
+                                color:#000; text-align:center; padding:6px; 
+                                text-decoration:none; border-radius:4px; font-weight:bold; font-size:13px;">
+                                카카오맵 길찾기 🚀
+                            </a>
+                        </div>
+                        """
+                        
+                        folium.Marker(
+                            [t_lat, t_lon],
+                            popup=folium.Popup(popup_html, max_width=200),
+                            icon=folium.Icon(color=conf['color'], icon=conf['icon'], prefix='fa')
+                        ).add_to(marker_cluster)
+            
+            st.success(f"검색 결과: **{count}개**의 시설을 찾았습니다.")
+            st_folium(m, width="100%", height=500)
 
-    st_folium(m, width=800, height=600)
+if __name__ == "__main__":
+    main()
